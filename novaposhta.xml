@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<extension type="plugin" version="3.0" group="system" method="upgrade">
+  <name>plg_system_novaposhta</name>
+  <author>Ваше Імя</author>
+  <version>1.0.0</version>
+  <description>Nova Poshta autocomplete for VirtueMart checkout with server proxy</description>
+  <files>
+    <filename plugin="novaposhta">novaposhta.php</filename>
+  </files>
+  <config>
+    <fields name="params">
+      <fieldset name="basic">
+        <field name="api_key" type="text" label="API Key Nova Poshta" description="Вставте ваш API Key Nova Poshta" />
+        <field name="nova_method_id" type="text" label="ID способу доставки Nova Poshta" description="ID shipment method у VirtueMart" />
+        <field name="field_np_city" type="text" label="Імя поля NP City" description="name або id прихованого input для міста" />
+        <field name="field_np_warehouse_desc" type="text" label="Імя поля NP Warehouse Desc" description="name або id прихованого input для опису відділення" />
+        <field name="field_np_warehouse_ref" type="text" label="Імя поля NP Warehouse Ref" description="name або id прихованого input для Ref відділення" />
+      </fieldset>
+    </fields>
+  </config>
+</extension>

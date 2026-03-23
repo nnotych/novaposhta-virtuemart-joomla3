@@ -1,0 +1,449 @@
+<?php
+defined('_JEXEC') or die;
+
+use Joomla\CMS\Factory;
+use Joomla\CMS\Log\Log;
+
+class plgSystemNovaposhta extends JPlugin
+{
+    public function onAjaxNovaposhta()
+    {
+        $app = Factory::getApplication();
+        $input = $app->input;
+
+        //  CSRF check
+        $token = $app->getSession()->getFormToken();
+        $requestToken = $input->get($token, '', 'STRING');
+        
+        if ($requestToken !== $token) {
+            echo new JResponseJson(null, 'Invalid token', true);
+            $app->close();
+        }
+
+        $payload = json_decode(file_get_contents('php://input'), true);
+        if (!is_array($payload)) {
+            echo new JResponseJson(null, 'Invalid JSON', true);
+            $app->close();
+        }
+
+        $apiKey = $this->params->get('api_key', '');
+        if (empty($apiKey)) {
+            echo new JResponseJson(null, 'API key not configured', true);
+            $app->close();
+        }
+
+        // whitelist Methods
+        $allowedMethods = ['getCities', 'getWarehouses', 'getServices'];
+        $method = isset($payload['calledMethod']) ? $payload['calledMethod'] : '';
+        
+        if (!in_array($method, $allowedMethods, true)) {
+            echo new JResponseJson(null, 'Method not allowed', true);
+            $app->close();
+        }
+
+        //  Rate limiting
+        $session = $app->getSession();
+        $lastRequest = $session->get('novaposhta_last_request', 0);
+        if ((time() - $lastRequest) < 1) {
+            echo new JResponseJson(null, 'Too many requests', true);
+            $app->close();
+        }
+        $session->set('novaposhta_last_request', time());
+
+        //  payload
+        $body = [
+            'apiKey' => trim($apiKey),
+            'modelName' => isset($payload['modelName']) ? trim($payload['modelName']) : '',
+            'calledMethod' => $method,
+            'methodProperties' => []
+        ];
+
+        if (isset($payload['methodProperties']) && is_array($payload['methodProperties'])) {
+            foreach ($payload['methodProperties'] as $key => $value) {
+                if (in_array($key, ['FindByString', 'CityRef', 'Limit'], true)) {
+                    $body['methodProperties'][$key] = trim((string)$value);
+                }
+            }
+        }
+
+        //  cURL secure
+        $ch = curl_init('https://api.novaposhta.ua/v2.0/json/');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode($body),
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_MAXREDIRS => 0,
+        ]);
+        
+        $resp = curl_exec($ch);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        if ($err) {
+            Log::add('Nova Poshta API error: ' . $err, Log::ERROR, 'plg_system_novaposhta');
+            echo new JResponseJson(null, 'API connection error', true);
+            $app->close();
+        }
+
+        $data = json_decode($resp, true);
+        if (!is_array($data)) {
+            Log::add('Invalid API response', Log::ERROR, 'plg_system_novaposhta');
+            echo new JResponseJson(null, 'Invalid API response', true);
+            $app->close();
+        }
+
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($data);
+        $app->close();
+    }
+
+    public function onAfterRender()
+    {
+        $app = Factory::getApplication();
+
+        if ($app->isClient('administrator')) {
+            return;
+        }
+
+        $input = $app->input;
+        $option = $input->getCmd('option', '');
+        $view = $input->getCmd('view', '');
+
+        if (!($option === 'com_virtuemart' && ($view === 'cart' || $view === 'checkout'))) {
+            return;
+        }
+
+        $novaMethodId = (int)$this->params->get('nova_method_id', 0);
+        $token = $app->getSession()->getFormToken();
+
+        $html = <<<'HTML'
+<div id="novaposhta_autocomplete_block" style="display:none; margin:15px 0; padding:15px; background:#f9f9f9; border:1px solid #ddd; border-radius:6px;">
+  <h3 style="margin:0 0 15px 0; font-size:18px; color:#333;">Нова Пошта — виберіть місто та відділення</h3>
+  <div class="autocomplete" style="margin-bottom:15px;">
+    <input type="text" id="np_city_input" placeholder="Введіть назву міста" autocomplete="off" style="padding:10px; width:100%; box-sizing:border-box; border:1px solid #ccc; border-radius:4px; font-size:14px;" />
+    <div id="np_city_suggestions" class="suggestions" style="position:relative; z-index:9999; margin-top:5px; max-height:300px; overflow-y:auto;"></div>
+  </div>
+  <ul id="np_warehouses" style="list-style:none; padding:0; margin:0; max-height:300px; overflow-y:auto; border:1px solid #ddd; border-radius:4px;"></ul>
+</div>
+
+<script>
+(function(){
+  try {
+    var novaMethodId = '__NOVA_METHOD_ID__';
+    var token = '__TOKEN__';
+
+    function escapeHtml(text) {
+      var div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function getField(name) {
+      var elem = document.querySelector('input[name="' + name.replace(/"/g, '\\"') + '"]');
+      if (!elem) {
+        elem = document.querySelector('textarea[name="' + name.replace(/"/g, '\\"') + '"]');
+      }
+      return elem || null;
+    }
+
+    function checkShipment() {
+      var radios = document.querySelectorAll('input[name="virtuemart_shipmentmethod_id"]');
+      var show = false;
+      
+      for (var i = 0; i < radios.length; i++){
+        if (radios[i].checked && String(radios[i].value) === String(novaMethodId)) { 
+          show = true; 
+          break; 
+        }
+      }
+      
+      var block = document.getElementById('novaposhta_autocomplete_block');
+      if (block) {
+        block.style.display = show ? 'block' : 'none';
+      }
+
+      if (!show) {
+        clearFields();
+      }
+    }
+
+    function clearFields() {
+      var fDesc = getField('np_warehouse_desc');
+      var fRef = getField('np_warehouse_ref');
+      
+      if (fDesc) { fDesc.value = ''; }
+      if (fRef) { fRef.value = ''; }
+    }
+
+    function closeSuggestions() {
+      var citySuggestions = document.getElementById('np_city_suggestions');
+      if (citySuggestions) citySuggestions.innerHTML = '';
+    }
+
+    function closeWarehouses() {
+      var warehousesList = document.getElementById('np_warehouses');
+      if (warehousesList) warehousesList.innerHTML = '';
+    }
+
+    document.addEventListener('change', function(e){
+      if (e.target && e.target.name === 'virtuemart_shipmentmethod_id') {
+        checkShipment();
+      }
+    });
+
+    var cityTimer = null;
+
+    function attachAutocomplete() {
+      var cityInput = document.getElementById('np_city_input');
+      if (!cityInput) return;
+
+      cityInput.addEventListener('input', function(){
+        clearTimeout(cityTimer);
+        var citySuggestions = document.getElementById('np_city_suggestions');
+        var warehousesList = document.getElementById('np_warehouses');
+        
+        if (citySuggestions) citySuggestions.innerHTML = '';
+        if (warehousesList) warehousesList.innerHTML = '';
+        
+        var q = cityInput.value.trim();
+        if (q.length < 2 || q.length > 100) return;
+        
+        cityTimer = setTimeout(function(){ 
+          searchCities(q); 
+        }, 400);
+      });
+
+      document.addEventListener('click', function(e){
+        var block = document.getElementById('novaposhta_autocomplete_block');
+        if (!block || !block.contains(e.target)) {
+          closeSuggestions();
+          closeWarehouses();
+        }
+      });
+    }
+
+    function searchCities(query) {
+      var params = new URLSearchParams();
+      params.append('option', 'com_ajax');
+      params.append('plugin', 'novaposhta');
+      params.append('format', 'json');
+      params.append(token, token);
+
+      var payload = { 
+        modelName: 'Address', 
+        calledMethod: 'getCities', 
+        methodProperties: { FindByString: query } 
+      };
+      
+      fetch('index.php?' + params.toString(), {
+        method: 'POST', 
+        headers: {'Content-Type':'application/json'}, 
+        body: JSON.stringify(payload)
+      }).then(function(r){ return r.json(); })
+       .then(function(resp){
+        if (!resp.data || !Array.isArray(resp.data)) return;
+        
+        var list = resp.data;
+        var citySuggestions = document.getElementById('np_city_suggestions');
+        if (!citySuggestions) return;
+        
+        citySuggestions.innerHTML = '';
+        if (!list.length) { 
+          citySuggestions.innerHTML = '<div style="padding:10px; color:#999;">Міста не знайдено</div>'; 
+          return; 
+        }
+        
+        list.slice(0, 20).forEach(function(city){
+          if (!city.Ref || !city.Description) return;
+          
+          var txt = city.AreaDescription 
+            ? escapeHtml(city.Description) + ' (' + escapeHtml(city.AreaDescription) + ')' 
+            : escapeHtml(city.Description);
+          var div = document.createElement('div');
+          div.innerHTML = txt;
+          div.style.padding = '10px';
+          div.style.cursor = 'pointer';
+          div.style.borderBottom = '1px solid #eee';
+          div.style.backgroundColor = '#fff';
+          div.style.transition = 'background-color 0.2s';
+          div.dataset.ref = city.Ref;
+          div.dataset.desc = city.Description;
+          
+          div.addEventListener('mouseover', function(){ 
+            this.style.backgroundColor = '#f0f8ff'; 
+          });
+          div.addEventListener('mouseout', function(){ 
+            this.style.backgroundColor = '#fff'; 
+          });
+          div.addEventListener('click', function(){
+            var input = document.getElementById('np_city_input');
+            if (input) input.value = escapeHtml(city.Description);
+            closeSuggestions();
+            loadWarehouses(city.Ref, city.Description);
+          });
+          
+          citySuggestions.appendChild(div);
+        });
+      }).catch(function(e){ 
+        console.error('novaposhta searchCities error', e); 
+      });
+    }
+
+    function loadWarehouses(cityRef, cityName) {
+      var warehousesList = document.getElementById('np_warehouses');
+      if (!warehousesList) return;
+      
+      warehousesList.innerHTML = '<li style="padding:10px; text-align:center; color:#999;">Завантаження...</li>';
+      
+      var params = new URLSearchParams();
+      params.append('option', 'com_ajax');
+      params.append('plugin', 'novaposhta');
+      params.append('format', 'json');
+      params.append(token, token);
+
+      var payload = { 
+        modelName: 'Address', 
+        calledMethod: 'getWarehouses', 
+        methodProperties: { CityRef: cityRef, Limit: 50 } 
+      };
+      
+      fetch('index.php?' + params.toString(), {
+        method: 'POST', 
+        headers: {'Content-Type':'application/json'}, 
+        body: JSON.stringify(payload)
+      }).then(function(r){ return r.json(); })
+       .then(function(resp){
+        if (!resp.data || !Array.isArray(resp.data)) return;
+        
+        var list = resp.data;
+        warehousesList.innerHTML = '';
+        
+        if (!list.length) { 
+          warehousesList.innerHTML = '<li style="padding:10px; text-align:center; color:#999;">Відділення не знайдено</li>'; 
+          return; 
+        }
+        
+        list.forEach(function(wh){
+          if (!wh.Ref || !wh.Description) return;
+          
+          var li = document.createElement('li');
+          var shortAddr = wh.ShortAddress ? ' — ' + escapeHtml(wh.ShortAddress) : '';
+          li.textContent = escapeHtml(wh.Description) + shortAddr;
+          li.style.padding = '10px';
+          li.style.cursor = 'pointer';
+          li.style.borderBottom = '1px solid #eee';
+          li.style.backgroundColor = '#fff';
+          li.style.transition = 'background-color 0.2s';
+          li.dataset.ref = wh.Ref;
+          li.dataset.desc = wh.Description;
+          li.dataset.city = cityName;
+          
+          li.addEventListener('mouseover', function(){ 
+            this.style.backgroundColor = '#f0f8ff'; 
+          });
+          li.addEventListener('mouseout', function(){ 
+            if (!this.classList.contains('selected')) {
+              this.style.backgroundColor = '#fff';
+            }
+          });
+          li.addEventListener('click', function(){ 
+            selectWarehouse(li, cityName); 
+          });
+          
+          warehousesList.appendChild(li);
+        });
+      }).catch(function(e){ 
+        console.error('novaposhta loadWarehouses error', e); 
+        warehousesList.innerHTML = '<li style="padding:10px; color:red;">Помилка завантаження</li>'; 
+      });
+    }
+
+    function selectWarehouse(li, cityName) {
+      var desc = li.dataset.desc;
+      var ref = li.dataset.ref;
+      
+      if (!desc || !ref) return;
+      
+      var fDesc = getField('np_warehouse_desc');
+      var fRef = getField('np_warehouse_ref');
+      
+      if (fDesc) { 
+        fDesc.value = desc;
+        fDesc.dispatchEvent(new Event('change', {bubbles: true}));
+      }
+      if (fRef) { 
+        fRef.value = ref;
+        fRef.dispatchEvent(new Event('change', {bubbles: true}));
+      }
+      
+      var siblings = li.parentNode ? li.parentNode.children : [];
+      for (var i = 0; i < siblings.length; i++){ 
+        if(siblings[i]) {
+          siblings[i].style.background = '#fff';
+          siblings[i].classList.remove('selected');
+        }
+      }
+      
+      li.style.background = '#e3f2fd';
+      li.classList.add('selected');
+      
+      setTimeout(function(){
+        closeWarehouses();
+        var warehousesList = document.getElementById('np_warehouses');
+        if (warehousesList) {
+          warehousesList.innerHTML = '<li style="padding:10px; font-weight:bold; color:#4CAF50;">✓ ' + escapeHtml(desc) + '</li>';
+        }
+      }, 200);
+    }
+
+    document.addEventListener('DOMContentLoaded', function(){
+      setTimeout(function(){
+        checkShipment();
+        attachAutocomplete();
+      }, 300);
+    });
+
+    var observer = new MutationObserver(function(){
+      checkShipment();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+  } catch (err) {
+    console.error('novaposhta init error', err);
+  }
+})();
+</script>
+HTML;
+
+        $js = str_replace(
+            ['__NOVA_METHOD_ID__', '__TOKEN__'],
+            [$novaMethodId, $token],
+            $html
+        );
+
+        try {
+            $body = $app->getBody();
+            $fieldset_end = '</fieldset>';
+            $pos = strpos($body, $fieldset_end);
+            
+            if ($pos !== false) {
+                $pos += strlen($fieldset_end);
+                $body = substr_replace($body, $js, $pos, 0);
+            } else if (strpos($body, '</form>') !== false) {
+                $body = preg_replace('/<\/form>/', $js . '</form>', $body, 1);
+            } else if (strpos($body, '</body>') !== false) {
+                $body = str_replace('</body>', $js . '</body>', $body);
+            } else {
+                $body .= $js;
+            }
+
+            $app->setBody($body);
+        } catch (Exception $e) {
+            Log::add('novaposhta error: ' . $e->getMessage(), Log::ERROR, 'plg_system_novaposhta');
+        }
+    }
+}
