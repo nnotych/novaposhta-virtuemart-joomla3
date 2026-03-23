@@ -1,4 +1,5 @@
 # Joomla Nova Poshta Plugin
+![novaposhta-virtuemart-joomla3](pingpong.jpg)
 
 A Joomla system plugin for integrating **Nova Poshta** delivery into VirtueMart 3.6.2+ (Joomla CMS).
 
