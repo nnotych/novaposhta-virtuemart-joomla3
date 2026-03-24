@@ -53,6 +53,6 @@ A Joomla system plugin for integrating **Nova Poshta** delivery into VirtueMart 
 This plugin uses the official **Nova Poshta API v2.0** as described in the [Nova Poshta documentation](https://developers.novaposhta.ua/en).
 
 ### 📝 License
-GPLv3
+MIT
 
 
