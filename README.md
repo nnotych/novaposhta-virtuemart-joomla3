@@ -52,6 +52,10 @@ A Joomla system plugin for integrating **Nova Poshta** delivery into VirtueMart 
 ### 📖 Documentation
 This plugin uses the official **Nova Poshta API v2.0** as described in the [Nova Poshta documentation](https://developers.novaposhta.ua/en).
 
+
+The selected city and warehouse are stored in hidden <input type="hidden"> fields inside the VirtueMart checkout form.
+
+These hidden fields ensure that delivery information is securely passed to the order system without being exposed in the frontend code.
 ### 📝 License
 MIT
 
