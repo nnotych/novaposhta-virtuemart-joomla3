@@ -321,7 +321,7 @@ class plgSystemNovaposhta extends JPlugin
   var cache = localStorage.getItem(cacheKey);
   var cacheTime = localStorage.getItem(cacheTimeKey);
 
-  // 🔥 24 години = 86400000 ms
+
   var CACHE_LIFETIME = 86400000;
 
   // =========================
@@ -366,7 +366,7 @@ class plgSystemNovaposhta extends JPlugin
       return;
     }
 
-    // 🔥 КЕШУЄМО НА 24 ГОДИНИ
+
     localStorage.setItem(cacheKey, JSON.stringify(resp.data));
     localStorage.setItem(cacheTimeKey, now);
 
