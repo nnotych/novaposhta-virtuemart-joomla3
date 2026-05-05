@@ -12,13 +12,13 @@ class plgSystemNovaposhta extends JPlugin
         $app = Factory::getApplication();
         $input = $app->input;
 
-        // ✅ CSRF (правильний спосіб Joomla)
+   
         if (!\JSession::checkToken('request')) {
             echo new JsonResponse(null, 'Invalid token', true);
             $app->close();
         }
 
-        // ✅ Безпечне читання JSON
+
         $raw = file_get_contents('php://input');
         if (!$raw) {
             echo new JsonResponse(null, 'Empty request', true);
@@ -67,7 +67,7 @@ class plgSystemNovaposhta extends JPlugin
         if (isset($payload['methodProperties']) && is_array($payload['methodProperties'])) {
             foreach ($payload['methodProperties'] as $key => $value) {
 
-                // ✅ захист від масивів/об'єктів
+           
                 if (!is_scalar($value)) {
                     continue;
                 }
@@ -109,7 +109,6 @@ class plgSystemNovaposhta extends JPlugin
             $app->close();
         }
 
-        // ✅ безпечний вивід
         echo json_encode($data, JSON_UNESCAPED_UNICODE);
         $app->close();
     }
