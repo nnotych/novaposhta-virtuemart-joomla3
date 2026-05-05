@@ -199,8 +199,17 @@ class plgSystemNovaposhta extends JPlugin
 
     function attachAutocomplete() {
       var cityInput = document.getElementById('np_city_input');
-      if (!cityInput) return;
+      if (cityInput) {
+  cityInput.addEventListener('focus', function () {
 
+    var ref = this.dataset.cityRef;
+    var name = this.dataset.cityName;
+
+    if (ref && name) {
+      loadWarehouses(ref, name);
+    }
+  });
+}
       cityInput.addEventListener('input', function(){
         clearTimeout(cityTimer);
         var citySuggestions = document.getElementById('np_city_suggestions');
@@ -280,11 +289,18 @@ class plgSystemNovaposhta extends JPlugin
             this.style.backgroundColor = '#fff'; 
           });
           div.addEventListener('click', function(){
-            var input = document.getElementById('np_city_input');
-            if (input) input.value = escapeHtml(city.Description);
-            closeSuggestions();
-            loadWarehouses(city.Ref, city.Description);
-          });
+
+  var input = document.getElementById('np_city_input');
+  if (input) input.value = city.Description;
+
+  closeSuggestions();
+
+  //  Зберігаємо вибране місто в інпуті
+  input.dataset.cityRef = city.Ref;
+  input.dataset.cityName = city.Description;
+
+  loadWarehouses(city.Ref, city.Description);
+});
           
           citySuggestions.appendChild(div);
         });
@@ -293,74 +309,109 @@ class plgSystemNovaposhta extends JPlugin
       });
     }
 
-    function loadWarehouses(cityRef, cityName) {
-      var warehousesList = document.getElementById('np_warehouses');
-      if (!warehousesList) return;
-      
-      warehousesList.innerHTML = '<li style="padding:10px; text-align:center; color:#999;">Завантаження...</li>';
-      
-      var params = new URLSearchParams();
-      params.append('option', 'com_ajax');
-      params.append('plugin', 'novaposhta');
-      params.append('format', 'json');
-      params.append(token, token);
+     function loadWarehouses(cityRef, cityName) {
 
-      var payload = { 
-        modelName: 'Address', 
-        calledMethod: 'getWarehouses', 
-        methodProperties: { CityRef: cityRef, Limit: 50 } 
-      };
-      
-      fetch('index.php?' + params.toString(), {
-        method: 'POST', 
-        headers: {'Content-Type':'application/json'}, 
-        body: JSON.stringify(payload)
-      }).then(function(r){ return r.json(); })
-       .then(function(resp){
-        if (!resp.data || !Array.isArray(resp.data)) return;
-        
-        var list = resp.data;
-        warehousesList.innerHTML = '';
-        
-        if (!list.length) { 
-          warehousesList.innerHTML = '<li style="padding:10px; text-align:center; color:#999;">Відділення не знайдено</li>'; 
-          return; 
-        }
-        
-        list.forEach(function(wh){
-          if (!wh.Ref || !wh.Description) return;
-          
-          var li = document.createElement('li');
-          var shortAddr = wh.ShortAddress ? ' — ' + escapeHtml(wh.ShortAddress) : '';
-          li.textContent = escapeHtml(wh.Description) + shortAddr;
-          li.style.padding = '10px';
-          li.style.cursor = 'pointer';
-          li.style.borderBottom = '1px solid #eee';
-          li.style.backgroundColor = '#fff';
-          li.style.transition = 'background-color 0.2s';
-          li.dataset.ref = wh.Ref;
-          li.dataset.desc = wh.Description;
-          li.dataset.city = cityName;
-          
-          li.addEventListener('mouseover', function(){ 
-            this.style.backgroundColor = '#f0f8ff'; 
-          });
-          li.addEventListener('mouseout', function(){ 
-            if (!this.classList.contains('selected')) {
-              this.style.backgroundColor = '#fff';
-            }
-          });
-          li.addEventListener('click', function(){ 
-            selectWarehouse(li, cityName); 
-          });
-          
-          warehousesList.appendChild(li);
-        });
-      }).catch(function(e){ 
-        console.error('novaposhta loadWarehouses error', e); 
-        warehousesList.innerHTML = '<li style="padding:10px; color:red;">Помилка завантаження</li>'; 
-      });
+  var warehousesList = document.getElementById('np_warehouses');
+  if (!warehousesList) return;
+
+  var cacheKey = 'np_wh_' + cityRef;
+  var cacheTimeKey = cacheKey + '_time';
+
+  var now = Date.now();
+  var cache = localStorage.getItem(cacheKey);
+  var cacheTime = localStorage.getItem(cacheTimeKey);
+
+  // 🔥 24 години = 86400000 ms
+  var CACHE_LIFETIME = 86400000;
+
+  // =========================
+  // 1. ПЕРЕВІРКА КЕШУ
+  // =========================
+  if (cache && cacheTime && (now - cacheTime < CACHE_LIFETIME)) {
+
+    var data = JSON.parse(cache);
+
+    render(data);
+    return;
+  }
+
+  // =========================
+  // 2. API ЗАПИТ
+  // =========================
+  warehousesList.innerHTML = '<li style="padding:10px; text-align:center; color:#999;">Завантаження...</li>';
+
+  var params = new URLSearchParams();
+  params.append('option', 'com_ajax');
+  params.append('plugin', 'novaposhta');
+  params.append('format', 'json');
+  params.append(token, token);
+
+  fetch('index.php?' + params.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      modelName: 'Address',
+      calledMethod: 'getWarehouses',
+      methodProperties: {
+        CityRef: cityRef,
+        Limit: 500
+      }
+    })
+  })
+  .then(r => r.json())
+  .then(function(resp) {
+
+    if (!resp || !resp.data) {
+      warehousesList.innerHTML = '<li style="padding:10px;">Немає даних</li>';
+      return;
     }
+
+    // 🔥 КЕШУЄМО НА 24 ГОДИНИ
+    localStorage.setItem(cacheKey, JSON.stringify(resp.data));
+    localStorage.setItem(cacheTimeKey, now);
+
+    render(resp.data);
+  })
+  .catch(function(err) {
+    console.error(err);
+    warehousesList.innerHTML = '<li style="padding:10px; color:red;">Помилка завантаження</li>';
+  });
+
+  // =========================
+  // 3. RENDER
+  // =========================
+  function render(list) {
+
+    warehousesList.innerHTML = '';
+
+    if (!list.length) {
+      warehousesList.innerHTML = '<li style="padding:10px;">Немає відділень</li>';
+      return;
+    }
+
+    list.forEach(function(wh) {
+
+      if (!wh.Ref || !wh.Description) return;
+
+      var li = document.createElement('li');
+
+      li.textContent = wh.Description + (wh.ShortAddress ? ' — ' + wh.ShortAddress : '');
+
+      li.style.padding = '10px';
+      li.style.cursor = 'pointer';
+      li.style.borderBottom = '1px solid #eee';
+
+      li.dataset.ref = wh.Ref;
+      li.dataset.desc = wh.Description;
+
+      li.onclick = function() {
+        selectWarehouse(li, cityName);
+      };
+
+      warehousesList.appendChild(li);
+    });
+  }
+}
 
     function selectWarehouse(li, cityName) {
       var desc = li.dataset.desc;
