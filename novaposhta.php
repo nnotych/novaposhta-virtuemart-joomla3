@@ -303,15 +303,37 @@ class plgSystemNovaposhta extends JPlugin
           div.addEventListener('click', function(){
 
   var input = document.getElementById('np_city_input');
-  if (input) input.value = city.Description;
 
-  closeSuggestions();
+if (!input) {
+  setTimeout(function () {
+    var retry = document.getElementById('np_city_input');
+    if (!retry) return;
 
-  //  Зберігаємо вибране місто в інпуті
-  input.dataset.cityRef = city.Ref;
-  input.dataset.cityName = city.Description;
+    retry.value = city.Description;
+    retry.dataset.cityRef = city.Ref;
+    retry.dataset.cityName = city.Description;
 
+    closeSuggestions();
+
+    setTimeout(function () {
+      loadWarehouses(city.Ref, city.Description);
+    }, 0);
+
+  }, 50);
+
+  return;
+}
+
+// normal flow
+input.value = city.Description;
+input.dataset.cityRef = city.Ref;
+input.dataset.cityName = city.Description;
+
+closeSuggestions();
+
+setTimeout(function () {
   loadWarehouses(city.Ref, city.Description);
+}, 0);
 });
           
           citySuggestions.appendChild(div);
