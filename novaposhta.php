@@ -3,6 +3,7 @@ defined('_JEXEC') or die;
 
 use Joomla\CMS\Factory;
 use Joomla\CMS\Log\Log;
+use Joomla\CMS\Response\JsonResponse;
 
 class plgSystemNovaposhta extends JPlugin
 {
@@ -11,62 +12,73 @@ class plgSystemNovaposhta extends JPlugin
         $app = Factory::getApplication();
         $input = $app->input;
 
-        //  CSRF check
-        $token = $app->getSession()->getFormToken();
-        $requestToken = $input->get($token, '', 'STRING');
-        
-        if ($requestToken !== $token) {
-            echo new JResponseJson(null, 'Invalid token', true);
+        // ✅ CSRF (правильний спосіб Joomla)
+        if (!\JSession::checkToken('request')) {
+            echo new JsonResponse(null, 'Invalid token', true);
             $app->close();
         }
 
-        $payload = json_decode(file_get_contents('php://input'), true);
+        // ✅ Безпечне читання JSON
+        $raw = file_get_contents('php://input');
+        if (!$raw) {
+            echo new JsonResponse(null, 'Empty request', true);
+            $app->close();
+        }
+
+        $payload = json_decode($raw, true);
         if (!is_array($payload)) {
-            echo new JResponseJson(null, 'Invalid JSON', true);
+            echo new JsonResponse(null, 'Invalid JSON', true);
             $app->close();
         }
 
-        $apiKey = $this->params->get('api_key', '');
-        if (empty($apiKey)) {
-            echo new JResponseJson(null, 'API key not configured', true);
+        $apiKey = trim((string)$this->params->get('api_key', ''));
+        if ($apiKey === '') {
+            echo new JsonResponse(null, 'API key not configured', true);
             $app->close();
         }
 
         // whitelist Methods
         $allowedMethods = ['getCities', 'getWarehouses', 'getServices'];
-        $method = isset($payload['calledMethod']) ? $payload['calledMethod'] : '';
-        
+        $method = isset($payload['calledMethod']) ? (string)$payload['calledMethod'] : '';
+
         if (!in_array($method, $allowedMethods, true)) {
-            echo new JResponseJson(null, 'Method not allowed', true);
+            echo new JsonResponse(null, 'Method not allowed', true);
             $app->close();
         }
 
-        //  Rate limiting
+        // Rate limiting
         $session = $app->getSession();
-        $lastRequest = $session->get('novaposhta_last_request', 0);
+        $lastRequest = (int)$session->get('novaposhta_last_request', 0);
+
         if ((time() - $lastRequest) < 1) {
-            echo new JResponseJson(null, 'Too many requests', true);
+            echo new JsonResponse(null, 'Too many requests', true);
             $app->close();
         }
         $session->set('novaposhta_last_request', time());
 
-        //  payload
+        // payload (логіка НЕ змінена)
         $body = [
-            'apiKey' => trim($apiKey),
-            'modelName' => isset($payload['modelName']) ? trim($payload['modelName']) : '',
+            'apiKey' => $apiKey,
+            'modelName' => isset($payload['modelName']) ? substr(trim((string)$payload['modelName']), 0, 50) : '',
             'calledMethod' => $method,
             'methodProperties' => []
         ];
 
         if (isset($payload['methodProperties']) && is_array($payload['methodProperties'])) {
             foreach ($payload['methodProperties'] as $key => $value) {
+
+                // ✅ захист від масивів/об'єктів
+                if (!is_scalar($value)) {
+                    continue;
+                }
+
                 if (in_array($key, ['FindByString', 'CityRef', 'Limit'], true)) {
-                    $body['methodProperties'][$key] = trim((string)$value);
+                    $body['methodProperties'][$key] = substr(trim((string)$value), 0, 100);
                 }
             }
         }
 
-        //  cURL secure
+        // cURL secure
         $ch = curl_init('https://api.novaposhta.ua/v2.0/json/');
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
@@ -78,26 +90,27 @@ class plgSystemNovaposhta extends JPlugin
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_MAXREDIRS => 0,
         ]);
-        
+
         $resp = curl_exec($ch);
         $err = curl_error($ch);
         curl_close($ch);
 
         if ($err) {
             Log::add('Nova Poshta API error: ' . $err, Log::ERROR, 'plg_system_novaposhta');
-            echo new JResponseJson(null, 'API connection error', true);
+            echo new JsonResponse(null, 'API connection error', true);
             $app->close();
         }
 
         $data = json_decode($resp, true);
+
         if (!is_array($data)) {
-            Log::add('Invalid API response', Log::ERROR, 'plg_system_novaposhta');
-            echo new JResponseJson(null, 'Invalid API response', true);
+            Log::add('Invalid API response: ' . substr($resp, 0, 300), Log::ERROR, 'plg_system_novaposhta');
+            echo new JsonResponse(null, 'Invalid API response', true);
             $app->close();
         }
 
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode($data);
+        // ✅ безпечний вивід
+        echo json_encode($data, JSON_UNESCAPED_UNICODE);
         $app->close();
     }
 
@@ -119,7 +132,6 @@ class plgSystemNovaposhta extends JPlugin
 
         $novaMethodId = (int)$this->params->get('nova_method_id', 0);
         $token = $app->getSession()->getFormToken();
-
         $html = <<<'HTML'
 <div id="novaposhta_autocomplete_block" style="display:none; margin:15px 0; padding:15px; background:#f9f9f9; border:1px solid #ddd; border-radius:6px;">
   <h3 style="margin:0 0 15px 0; font-size:18px; color:#333;">Нова Пошта — виберіть місто та відділення</h3>
